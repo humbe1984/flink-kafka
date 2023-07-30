@@ -3,12 +3,58 @@
  */
 package io.confluent.hrivero.flink.kafka;
 
+import java.io.InputStream;
+import java.util.Properties;
+
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.connector.kafka.source.KafkaSource;
+import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
+import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.util.Collector;
+
 public class App {
-    public String getGreeting() {
-        return "Hello World!";
+
+    public static void main(String[] args) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+        Properties consumerConfig = new Properties();
+        try (InputStream stream = App.class.getClassLoader().getResourceAsStream("consumer.properties")) {
+            consumerConfig.load(stream);
+        }
+
+        KafkaSource<String> source = KafkaSource.<String>builder()
+                .setProperties(consumerConfig)
+                .setTopics("hrivero-users")
+                .setStartingOffsets(OffsetsInitializer.earliest())
+                .setValueOnlyDeserializer(new SimpleStringSchema())
+                .build();
+
+        DataStream<Tuple2<String, Integer>> dataStream = env
+                .fromSource(source, WatermarkStrategy.noWatermarks(), "Kafka Source")
+                .flatMap(new Splitter())
+                .keyBy(value -> value.f0)
+                .window(TumblingProcessingTimeWindows.of(Time.seconds(30)))
+                .sum(1);
+
+        dataStream.print();
+
+        env.execute("Window WordCount");
     }
 
-    public static void main(String[] args) {
-        System.out.println(new App().getGreeting());
+    public static class Splitter implements FlatMapFunction<String, Tuple2<String, Integer>> {
+
+        @Override
+        public void flatMap(String value, Collector<Tuple2<String, Integer>> out)
+                throws Exception {
+            for (String word : value.split(" ")) {
+                out.collect(new Tuple2<String, Integer>(word, 1));
+            }
+        }
     }
 }
